@@ -17,17 +17,40 @@ const TIERS = {t1:65,t2:40};
 // ---------- state ----------
 const uid = () => Math.random().toString(36).slice(2,10);
 const today = () => new Date().toISOString().slice(0,10);
+const DEFAULT_CLUSTERS=['Email & correspondence','Documents & files','CRM & sales','ERP, finance & operations','Customer support','Team chat & meetings','Projects & knowledge','Databases & analytics','Other'];
+const TYPE_CLUSTER={'Email client':DEFAULT_CLUSTERS[0],'File storage':DEFAULT_CLUSTERS[1],'Spreadsheets':DEFAULT_CLUSTERS[1],'Contracts & forms':DEFAULT_CLUSTERS[1],'CRM':DEFAULT_CLUSTERS[2],'Marketing':DEFAULT_CLUSTERS[2],
+ 'ERP':DEFAULT_CLUSTERS[3],'Accounting':DEFAULT_CLUSTERS[3],'HR & payroll':DEFAULT_CLUSTERS[3],'Inventory & operations':DEFAULT_CLUSTERS[3],'Website & ecommerce':DEFAULT_CLUSTERS[3],
+ 'Customer support':DEFAULT_CLUSTERS[4],'Team communication':DEFAULT_CLUSTERS[5],'Projects & knowledge':DEFAULT_CLUSTERS[6],'Analytics & databases':DEFAULT_CLUSTERS[7],'Other / custom':DEFAULT_CLUSTERS[8]};
+const PRIORITY={high:['★ High',3],med:['Medium',2],low:['Low',1]};
 function freshState(){return{
+  clusters:[...DEFAULT_CLUSTERS],
   leads:[],
-  partners:[{id:'p_michael',name:'Michael Fanous',org:'Data brokerage / channel partner',handle:'',notes:'Direct relationships with leading US frontier AI labs. Very large contracts. Wants yellow cells of Inventory tab completed for each business.',exclusiveFirst:true,slaHours:24,minEmployees:20,requirements:'U.S.-facing, currently operating, 20+ U.S. full-time employees. One system per row on the Inventory tab. Estimates are fine.'}],
-  weights:{...DEFAULT_WEIGHTS}, tab:'today', sort:{k:'score',d:-1}};}
-let S; try{S=JSON.parse(localStorage.getItem(KEY))}catch(e){}
-S = Object.assign(freshState(), S||{}); S.weights = Object.assign({},DEFAULT_WEIGHTS,S.weights);
-const save = () => { try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){} };
+  partners:[{id:'p_michael',priority:'high',wants:[],name:'Michael Fanous',org:'Data brokerage / channel partner',handle:'',notes:'Direct relationships with leading US frontier AI labs. Very large contracts. Wants yellow cells of Inventory tab completed for each business.',exclusiveFirst:true,slaHours:24,minEmployees:20,requirements:'U.S.-facing, currently operating, 20+ U.S. full-time employees. One system per row on the Inventory tab. Estimates are fine.'}],
+  weights:{...DEFAULT_WEIGHTS}, tab:'market', sort:{k:'score',d:-1}};}
+function hydrate(o){
+  const s=Object.assign(freshState(),o||{}); s.weights=Object.assign({},DEFAULT_WEIGHTS,s.weights);
+  if(!Array.isArray(s.clusters)||!s.clusters.length) s.clusters=[...DEFAULT_CLUSTERS];
+  s.partners=(s.partners||[]).map(p=>Object.assign({priority:'med',wants:[]},p)); return s;
+}
+let S; try{S=hydrate(JSON.parse(localStorage.getItem(KEY)))}catch(e){S=hydrate()}
+let serverMode=false, pushTimer;
+function setStatus(t){const e=document.getElementById('status'); if(e) e.textContent=t}
+async function push(){
+  try{const r=await fetch('/api/state',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(S)}); setStatus(r.ok?'💾 saved to disk':'⚠ disk save failed')}
+  catch(e){setStatus('⚠ server not reachable (saved in browser only)')}
+}
+const save = () => { try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){} if(serverMode){clearTimeout(pushTimer);pushTimer=setTimeout(push,250)} };
+async function boot(){
+  if(!/^https?:$/.test(location.protocol)){setStatus('browser-only storage (use the launcher for disk saves)');return}
+  try{const r=await fetch('/api/state'); if(!r.ok) throw 0; const d=await r.json(); serverMode=true;
+    if(d&&d.leads){S=hydrate(d);try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}} else await push();
+    setStatus('💾 saved to disk'); render();
+  }catch(e){setStatus('browser-only storage')}
+}
 
 function newLead(o={}){return Object.assign({id:uid(),name:'',contact:'',authority:'other',handle:'',source:'',website:'',country:'US',desc:'',usEmployees:'',contractors:'',inboxes:'',
   usFacing:true,operating:true,volumeTB:'',years:'',whereLives:'',exportSpeed:'unknown',exportNote:'',systems:[],filesNote:'',
-  stage:'New',responsiveness:'warm',vip:false,partnerId:'p_michael',submittedAt:'',price:'',decision:'pending',alsoSharedWith:'',
+  cluster:'',stage:'New',responsiveness:'warm',vip:false,partnerId:'p_michael',submittedAt:'',price:'',decision:'pending',alsoSharedWith:'',
   nextAction:'',nextDate:'',lastContact:today(),notes:'',created:today()},o);}
 
 // ---------- scoring ----------
@@ -85,11 +108,12 @@ function download(name,text,type='application/json'){
 }
 
 // ---------- rendering ----------
-const TABS=[['today','Today'],['board','Board'],['matrix','Priority matrix'],['table','All leads'],['partners','Partners'],['settings','Scoring']];
+const TABS=[['market','Market'],['today','Today'],['board','Board'],['matrix','Priority matrix'],['table','All leads'],['partners','Buyers'],['settings','Scoring']];
 function render(){
   $('#tabs').innerHTML=TABS.map(([k,v])=>`<button data-tab="${k}" class="${S.tab===k?'on':''}">${v}</button>`).join('');
-  $('#main').innerHTML=({today:vToday,board:vBoard,matrix:vMatrix,table:vTable,partners:vPartners,settings:vSettings})[S.tab]();
+  $('#main').innerHTML=({market:vMarket,today:vToday,board:vBoard,matrix:vMatrix,table:vTable,partners:vPartners,settings:vSettings})[S.tab]();
   if(S.tab==='board') wireBoard();
+  if(S.tab==='market') wireMarket();
 }
 const leadsSorted = () => S.leads.map(l=>({l,s:score(l)})).sort((a,b)=>b.s-a.s);
 function badges(l,s){
@@ -166,16 +190,18 @@ function vTable(){
   </tbody></table>`;
 }
 function vPartners(){
-  return `<p class="mute">Partners are the labs / channel partners you sell through. Their rules drive qualification, the answer clock, and the exclusivity warning.</p>
+  return `<p class="mute">Buyers are the labs / channel partners you sell through. Their rules drive qualification, the answer clock, and the exclusivity warning.</p>
   <div class="grid2">${S.partners.map(p=>`<div class="card"><h2>${esc(p.name)}</h2>
    ${['name','org','handle'].map(k=>`<label class="fl">${k}<input data-p="${p.id}" data-k="${k}" value="${esc(p[k])}"></label>`).join('')}
    <label class="fl">Requirements<textarea data-p="${p.id}" data-k="requirements">${esc(p.requirements)}</textarea></label>
    <label class="fl">Notes<textarea data-p="${p.id}" data-k="notes">${esc(p.notes)}</textarea></label>
    <div class="f"><label class="fl">Min US employees<input type="number" data-p="${p.id}" data-k="minEmployees" value="${p.minEmployees}"></label>
    <label class="fl">Answer SLA (hours)<input type="number" data-p="${p.id}" data-k="slaHours" value="${p.slaHours}"></label></div>
+   <label class="fl">Priority<select data-p="${p.id}" data-k="priority">${Object.entries(PRIORITY).map(([k,v])=>`<option value="${k}" ${k===p.priority?'selected':''}>${v[0]}</option>`).join('')}</select></label>
+   <fieldset><legend>Wants (none checked = anything)</legend>${S.clusters.map(c=>`<label class="fl chk"><input type="checkbox" data-pw="${p.id}" data-cl="${esc(c)}" ${p.wants.includes(c)?'checked':''}> ${esc(c)}</label>`).join('')}</fieldset>
    <label class="fl chk"><input type="checkbox" data-p="${p.id}" data-k="exclusiveFirst" ${p.exclusiveFirst?'checked':''}> They must see every lead before any other lab</label><br>
    <button class="btn" data-action="copy-request" data-id="${p.id}">Copy "send us your inventory" message</button>
-   <p class="mute">${S.leads.filter(l=>l.partnerId===p.id).length} leads routed here.</p></div>`).join('')}
+   <p class="mute">${S.leads.filter(l=>l.partnerId===p.id).length} leads routed here. <button class="btn danger" data-action="del-partner" data-id="${p.id}">Remove buyer</button></p></div>`).join('')}
   </div><p><button class="btn" data-action="new-partner">+ Add partner</button></p>`;
 }
 function vSettings(){
@@ -183,8 +209,84 @@ function vSettings(){
   return `<div class="card"><h2>Priority score weights (total ${tot}; normalized to 100)</h2>
   ${Object.keys(w).map(k=>`<div class="wrow"><span>${WEIGHT_LABELS[k]}</span><input type="range" min="0" max="40" value="${w[k]}" data-w="${k}"><b>${w[k]}</b></div>`).join('')}
   <p class="mute">Gate: if a lead isn't U.S.-facing, isn't operating, or is under the partner's minimum US employees, the score is cut to 30%. VIP flag adds +10. Tier 1 ≥ ${TIERS.t1}, Tier 2 ≥ ${TIERS.t2}.</p>
-  <button class="btn" data-action="reset-weights">Reset to defaults</button></div>`;
+  <button class="btn" data-action="reset-weights">Reset to defaults</button></div>
+  <div class="card" style="margin-top:14px"><h2>Supply clusters (one per line)</h2><textarea data-clusters style="min-height:180px">${esc(S.clusters.join('\n'))}</textarea><p class="mute">These are the groups on the Market tab. Leads in a removed cluster show up under Unsorted.</p></div>`;
 }
+
+
+// ---------- market view: supply clusters (left) -> buyers (right) ----------
+let sel=null; // {kind:'lead'|'buyer', id}
+const active = () => S.leads.filter(l=>l.stage!=='Dead');
+function clusterOf(l){
+  if(l.cluster&&S.clusters.includes(l.cluster)) return l.cluster;
+  const counts={}; for(const x of l.systems||[]){const c=TYPE_CLUSTER[x.type]; if(c&&c!==DEFAULT_CLUSTERS[8]) counts[c]=(counts[c]||0)+1}
+  const best=Object.entries(counts).sort((a,b)=>b[1]-a[1])[0]; return best?best[0]:'Unsorted';
+}
+const wantsCluster=(p,c)=>!p.wants.length||p.wants.includes(c);
+function selSets(){
+  if(!sel) return null;
+  const L=new Set(),B=new Set(),C=new Set();
+  if(sel.kind==='buyer'){const p=S.partners.find(x=>x.id===sel.id); if(!p) return null; B.add(p.id);
+    for(const l of active()){ if(l.partnerId===p.id||(p.wants.length&&p.wants.includes(clusterOf(l)))){L.add(l.id);C.add(clusterOf(l))} }
+    p.wants.forEach(c=>C.add(c));
+  } else {const l=S.leads.find(x=>x.id===sel.id); if(!l) return null; L.add(l.id); C.add(clusterOf(l)); B.add(l.partnerId);
+    S.partners.forEach(p=>{if(p.wants.length&&p.wants.includes(clusterOf(l))) B.add(p.id)});}
+  return {L,B,C};
+}
+function chip(l,s,ss){
+  const sla=slaInfo(l), dim=ss&&!ss.L.has(l.id)?' dim':'', on=sel?.kind==='lead'&&sel.id===l.id?' on':'';
+  return `<div class="chip t${tier(s)}${dim}${on}" draggable="true" data-id="${l.id}" data-sel="lead:${l.id}" title="${esc(l.contact)}">
+   <span class="sc">${s}</span><span class="nm">${l.vip?'★ ':''}${esc(l.name||'(unnamed)')}</span>
+   <span class="mt">${l.volumeTB?esc(l.volumeTB)+'TB':''}${sla?` ⏱${sla.late?'!':''}`:''}${qualification(l,partnerOf(l)?.minEmployees||20).ok?'':' ⚠'}</span>
+   <button class="ed" data-open="${l.id}" title="Open lead">✎</button></div>`;
+}
+function vMarket(){
+  const ss=selSets(), all=active().map(l=>({l,s:score(l),c:clusterOf(l)}));
+  const names=[...S.clusters]; if(all.some(x=>x.c==='Unsorted')) names.unshift('Unsorted');
+  const tb=all.reduce((a,x)=>a+(num(x.l.volumeTB)||0),0), pending=all.filter(x=>slaInfo(x.l)).length;
+  const boxes=names.map(c=>{
+    const items=all.filter(x=>x.c===c).sort((a,b)=>b.s-a.s), vol=items.reduce((a,x)=>a+(num(x.l.volumeTB)||0),0);
+    const hl=ss&&ss.C.has(c)?' hl':'', un=c==='Unsorted'?' unsorted':'';
+    return `<div class="cl${hl}${un}" data-cluster="${esc(c)}"><h3>${esc(c)} <span>${items.length}${vol?` · ${+vol.toFixed(1)}TB`:''}</span></h3>
+      ${items.map(x=>chip(x.l,x.s,ss)).join('')||'<p class="mute empty">Drop leads here</p>'}</div>`}).join('');
+  const buyers=[...S.partners].sort((a,b)=>(PRIORITY[b.priority]?.[1]||0)-(PRIORITY[a.priority]?.[1]||0)).map(p=>{
+    const routed=all.filter(x=>x.l.partnerId===p.id), pot=all.filter(x=>wantsCluster(p,x.c)), dim=ss&&!ss.B.has(p.id)?' dim':'', on=sel?.kind==='buyer'&&sel.id===p.id?' on':'';
+    const pend=routed.filter(x=>slaInfo(x.l)).length;
+    return `<div class="buyer${dim}${on}" data-b="${p.id}" data-sel="buyer:${p.id}"><b>${esc(p.name)}</b> <span class="pill ${p.priority==='high'?'t1':''}">${PRIORITY[p.priority]?.[0]||''}</span>
+      <div class="wants">${p.wants.length?p.wants.map(w=>`<span class="pill">${esc(w)}</span>`).join(''):'<span class="pill">wants: anything</span>'}</div>
+      <small class="mute">${routed.length} routed${pend?` · ${pend} awaiting answer`:''} · ${pot.length} matching leads</small>
+      ${p.exclusiveFirst?'<small class="mute"><br>sees everything first · '+p.slaHours+'h answer</small>':''}</div>`}).join('');
+  return `<div class="banner">${all.length} supply leads · ${+tb.toFixed(1)} TB offered · ${S.partners.length} buyers · ${pending} awaiting a buyer answer. <span class="mute">Click a lead or buyer to see connections (solid = routed, dashed = potential match). Drag a lead into another cluster to re-sort it, or onto a buyer to route it.</span></div>
+  <div class="market" id="market"><svg id="links" class="links"></svg>
+   <section><h2>Supply: what people are offering</h2><div class="clusters">${boxes}</div></section>
+   <section><h2>Buyers</h2>${buyers}<button class="btn" data-action="new-partner">+ Add buyer</button></section></div>`;
+}
+function wireMarket(){
+  const m=$('#market');
+  m.querySelectorAll('.chip').forEach(c=>c.addEventListener('dragstart',e=>e.dataTransfer.setData('text/plain',c.dataset.id)));
+  const target=(sel,fn)=>m.querySelectorAll(sel).forEach(el=>{
+    el.addEventListener('dragover',e=>{e.preventDefault();el.classList.add('over')});
+    el.addEventListener('dragleave',()=>el.classList.remove('over'));
+    el.addEventListener('drop',e=>{e.preventDefault();const l=S.leads.find(x=>x.id===e.dataTransfer.getData('text/plain'));if(l){fn(l,el);save();render()}});});
+  target('.cl',(l,el)=>{l.cluster=el.dataset.cluster==='Unsorted'?'':el.dataset.cluster});
+  target('.buyer',(l,el)=>{l.partnerId=el.dataset.b});
+  drawLinks();
+}
+function drawLinks(){
+  const m=$('#market'), svg=$('#links'); if(!m||!svg) return;
+  const mr=m.getBoundingClientRect(); svg.setAttribute('width',mr.width); svg.setAttribute('height',mr.height);
+  if(!sel){svg.innerHTML='';return}
+  const pt=(el,side)=>{const r=el.getBoundingClientRect();return [(side==='r'?r.right:r.left)-mr.left,r.top+r.height/2-mr.top]};
+  let out=''; const link=(a,b,solid)=>{ if(!a||!b) return; const [x1,y1]=pt(a,'r'),[x2,y2]=pt(b,'l'),dx=Math.max(40,(x2-x1)/2);
+    out+=`<path d="M${x1},${y1} C${x1+dx},${y1} ${x2-dx},${y2} ${x2},${y2}" class="ln${solid?'':' pot'}"/>`};
+  const chipEl=id=>m.querySelector(`.chip[data-id="${id}"]`), buyEl=id=>m.querySelector(`.buyer[data-b="${id}"]`);
+  if(sel.kind==='buyer'){const p=S.partners.find(x=>x.id===sel.id); if(!p) return;
+    for(const l of active()){ if(l.partnerId===p.id) link(chipEl(l.id),buyEl(p.id),true); else if(p.wants.includes(clusterOf(l))) link(chipEl(l.id),buyEl(p.id),false); }
+  } else {const l=S.leads.find(x=>x.id===sel.id); if(!l) return; link(chipEl(l.id),buyEl(l.partnerId),true);
+    S.partners.forEach(p=>{if(p.id!==l.partnerId&&p.wants.includes(clusterOf(l))) link(chipEl(l.id),buyEl(p.id),false)});}
+  svg.innerHTML=out;
+}
+window.addEventListener('resize',drawLinks);
 
 // ---------- lead drawer ----------
 const opt = (o,v)=>Object.entries(o).map(([k,x])=>`<option value="${k}" ${k===v?'selected':''}>${x[0]}</option>`).join('');
@@ -211,7 +313,8 @@ function openLead(id){
   <fieldset><legend>Deal</legend><div class="f">
    <label class="fl">Stage<select data-k="stage">${STAGES.map(s=>`<option ${s===l.stage?'selected':''}>${s}</option>`).join('')}</select></label>
    <label class="fl">Responsiveness<select data-k="responsiveness">${opt(RESP,l.responsiveness)}</select></label>
-   <label class="fl">Partner<select data-k="partnerId">${S.partners.map(p=>`<option value="${p.id}" ${p.id===l.partnerId?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label>
+   <label class="fl">Cluster (what they offer)<select data-k="cluster"><option value="">Auto: ${esc(clusterOf({...l,cluster:''}))}</option>${S.clusters.map(c=>`<option ${c===l.cluster?'selected':''}>${esc(c)}</option>`).join('')}</select></label>
+   <label class="fl">Routed to buyer<select data-k="partnerId">${S.partners.map(p=>`<option value="${p.id}" ${p.id===l.partnerId?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label>
    <label class="fl chk"><input type="checkbox" data-k="vip" ${l.vip?'checked':''}> ★ VIP (+10)</label>
    ${inp(l,'submittedAt','Submitted to partner (starts answer clock)','datetime-local')}
    <label class="fl">Partner decision<select data-k="decision">${['pending','yes','no'].map(v=>`<option ${v===l.decision?'selected':''}>${v}</option>`).join('')}</select></label>
@@ -281,8 +384,9 @@ function requestMessage(p){
 
 // ---------- events ----------
 document.addEventListener('click',e=>{
-  const t=e.target.closest('[data-tab],[data-action],[data-open],[data-sort]'); if(!t) return;
-  if(t.dataset.tab){S.tab=t.dataset.tab;save();render();return}
+  const t=e.target.closest('[data-tab],[data-action],[data-open],[data-sort],[data-sel]'); if(!t) return;
+  if(t.dataset.sel&&!t.dataset.open&&!t.dataset.action){const [kind,id]=t.dataset.sel.split(':');sel=sel&&sel.kind===kind&&sel.id===id?null:{kind,id};render();return}
+  if(t.dataset.tab){S.tab=t.dataset.tab;sel=null;save();render();return}
   if(t.dataset.sort){S.sort={k:t.dataset.sort,d:S.sort.k===t.dataset.sort?-S.sort.d:-1};save();render();return}
   const a=t.dataset.action, d=$('#drawer'), cur=()=>S.leads.find(l=>l.id===d.dataset.id);
   if(!a){ if(t.dataset.open) openLead(t.dataset.open); return; }
@@ -297,7 +401,8 @@ document.addEventListener('click',e=>{
   else if(a==='del-sys'){const l=cur();l.systems.splice(+t.dataset.i,1);save();openLead(l.id);refreshDrawerMeta(l)}
   else if(a==='del-lead'){if(confirm('Delete this lead?')){S.leads=S.leads.filter(l=>l.id!==d.dataset.id);d.hidden=true;save();render()}}
   else if(a==='copy-request'){navigator.clipboard.writeText(requestMessage(S.partners.find(p=>p.id===t.dataset.id)||S.partners[0])).then(()=>toast('Copied'))}
-  else if(a==='new-partner'){S.partners.push({id:uid(),name:'New partner',org:'',handle:'',notes:'',requirements:'',exclusiveFirst:false,slaHours:24,minEmployees:20});save();render()}
+  else if(a==='new-partner'){S.partners.push({id:uid(),priority:'med',wants:[],name:'New buyer',org:'',handle:'',notes:'',requirements:'',exclusiveFirst:false,slaHours:24,minEmployees:20});save();render()}
+  else if(a==='del-partner'){if(confirm('Remove this buyer? Leads routed to it become unrouted.')){S.partners=S.partners.filter(p=>p.id!==t.dataset.id);S.leads.forEach(l=>{if(l.partnerId===t.dataset.id)l.partnerId=S.partners[0]?.id||''});sel=null;save();render()}}
   else if(a==='reset-weights'){S.weights={...DEFAULT_WEIGHTS};save();render()}
   else if(a==='export-json') download(`brokerage-backup-${today()}.json`,JSON.stringify(S,null,1));
   else if(a==='demo') loadDemo();
@@ -305,6 +410,8 @@ document.addEventListener('click',e=>{
 document.addEventListener('input',e=>{
   const t=e.target, d=$('#drawer');
   if(t.dataset.w){S.weights[t.dataset.w]=+t.value;save();t.nextElementSibling.textContent=t.value;return}
+  if(t.dataset.pw){const p=S.partners.find(x=>x.id===t.dataset.pw);p.wants=t.checked?[...p.wants,t.dataset.cl]:p.wants.filter(c=>c!==t.dataset.cl);save();return}
+  if(t.dataset.clusters!==undefined){S.clusters=t.value.split('\n').map(x=>x.trim()).filter(Boolean);save();return}
   if(t.dataset.p){const p=S.partners.find(x=>x.id===t.dataset.p);p[t.dataset.k]=t.type==='checkbox'?t.checked:t.type==='number'?+t.value:t.value;save();return}
   if(d.hidden||!d.contains(t)) return;
   const l=S.leads.find(x=>x.id===d.dataset.id); if(!l) return;
@@ -313,7 +420,7 @@ document.addEventListener('input',e=>{
   save(); refreshDrawerMeta(l);
 });
 $('#xlsx-in').addEventListener('change',async e=>{const f=e.target.files[0];if(f){importInventory(await f.arrayBuffer());e.target.value=''}});
-$('#json-in').addEventListener('change',async e=>{const f=e.target.files[0];if(!f)return;try{S=Object.assign(freshState(),JSON.parse(await f.text()));save();render()}catch(x){toast('Bad file')}e.target.value=''});
+$('#json-in').addEventListener('change',async e=>{const f=e.target.files[0];if(!f)return;try{S=hydrate(JSON.parse(await f.text()));save();render()}catch(x){toast('Bad file')}e.target.value=''});
 
 function loadDemo(){
   const d=(o)=>S.leads.push(newLead(o));
@@ -323,7 +430,11 @@ function loadDemo(){
   d({name:'Tiny Studio LLC',contact:'Jo',usEmployees:8,volumeTB:0.2,years:2,stage:'New',responsiveness:'cold'});
   d({name:'Harbor Logistics',contact:'Priya',authority:'mgr',usEmployees:300,volumeTB:30,years:9,exportSpeed:'month',stage:'With partner',submittedAt:new Date(Date.now()-20*36e5).toISOString().slice(0,16),responsiveness:'warm',
     systems:[{type:'ERP',tool:'SAP',years:'9',contents:'',export:''},{type:'Customer support',tool:'Zendesk',years:'6',contents:'',export:''}]});
+  d({name:'Pinecrest Law Partners',contact:'Lena',authority:'ceo',usEmployees:45,volumeTB:3,years:11,exportSpeed:'week',stage:'Qualifying',systems:[{type:'Email client',tool:'Outlook',years:'11',contents:'client correspondence',export:'PST'},{type:'Contracts & forms',tool:'DocuSign',years:'7',contents:'',export:'Yes'}]});
+  d({name:'BrightPath Support Co',contact:'Marcus',authority:'exec',usEmployees:220,volumeTB:6,years:7,exportSpeed:'now',stage:'Inventory received',responsiveness:'hot',systems:[{type:'Customer support',tool:'Zendesk',years:'7',contents:'tickets',export:'API'},{type:'Team communication',tool:'Slack',years:'5',contents:'',export:'Yes'}]});
+  if(!S.partners.some(p=>p.id==='demo_b1')) S.partners.push({id:'demo_b1',name:'Frontier Lab A (demo)',org:'',handle:'',notes:'',requirements:'',exclusiveFirst:false,slaHours:48,minEmployees:20,priority:'med',wants:[S.clusters[0],S.clusters[4],S.clusters[5]]});
   save();render();
 }
+boot();
 render();
 setInterval(()=>{if(S.tab==='today'&&$('#drawer').hidden&&$('#modal').hidden)render()},60000);
