@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brokerage CRM</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+<header class="top">
+  <h1>Brokerage<span>CRM</span></h1>
+  <nav id="tabs"></nav>
+  <div class="actions">
+    <button class="btn primary" data-action="new-lead">+ New lead</button>
+    <button class="btn" data-action="paste-dm">Paste a DM</button>
+    <label class="btn">Import inventory .xlsx<input type="file" id="xlsx-in" accept=".xlsx" hidden></label>
+    <button class="btn" data-action="export-json">Backup</button>
+    <label class="btn">Restore<input type="file" id="json-in" accept=".json" hidden></label>
+  </div>
+</header>
+<main id="main"></main>
+<aside id="drawer" class="drawer" hidden></aside>
+<div id="modal" class="modal" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
